@@ -84,11 +84,13 @@ int mosquitto_auth_unpwd_check(void *user_data, const char *username, const char
 #endif
   if ( ! strcmp(username, "jwt") ) {
 
+	time(&now);
+
 	int status = jwt_decode(&jwt, password, key , sizeof(key));
 
 	if (( status == 0 ) && (jwt != NULL) ) {
 #ifdef MQAP_DEBUG	
-		fprintf(stderr, "mosquitto_auth_unpwd_check:  password is a valid token :)\n");
+		fprintf(stderr, "mosquitto_auth_unpwd_check:  password is a valid JWT token\n");
 		val = jwt_get_grant(jwt, "iss");
      		fprintf(stderr, "mosquitto_auth_unpwd_check:  iss : %s\n", val);
 		val = jwt_get_grant(jwt, "sub");
@@ -99,11 +101,19 @@ int mosquitto_auth_unpwd_check(void *user_data, const char *username, const char
      		fprintf(stderr, "mosquitto_auth_unpwd_check:  exp : %d\n", i_val);
 		val = get_js_object(jwt->grants, "aud");
      		fprintf(stderr, "mosquitto_auth_unpwd_check:  aud : %s\n", val);
+     		fprintf(stderr, "mosquitto_auth_unpwd_check:  now : %d\n", (int)now);
 #endif
-		time(&now);
 		iat = get_js_int(jwt->grants, "iat");		
 		exp = get_js_int(jwt->grants, "exp");		
+		if ( (now < iat) || (now > exp) ) {
+#ifdef MQAP_DEBUG
+                fprintf(stderr, "mosquitto_auth_unpwd_check:  token is expired\n");
+#endif
+		   jwt_free(jwt);
+                   return MOSQ_ERR_AUTH;
+		}
 
+		// TODO add here some other controls about iss, sub, ...
 
 		jwt_free(jwt);
         	return MOSQ_ERR_SUCCESS;
