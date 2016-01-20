@@ -10,11 +10,29 @@
 
 #include <jwt.h>
 
+struct jwt {
+        jwt_alg_t alg;
+        unsigned char *key;
+        int key_len;
+        json_t *grants;
+};
+
+struct userdata {
+        char *username;
+};
+
+
 int mosquitto_auth_plugin_version(void) {
   return MOSQ_AUTH_PLUGIN_VERSION;
 }
 
 int mosquitto_auth_plugin_init(void **user_data, struct mosquitto_auth_opt *auth_opts, int auth_opt_count) {
+
+   *user_data = (struct userdata *)malloc(sizeof(struct userdata));
+   if (*user_data == NULL) {
+     perror("allocting userdata");
+     return MOSQ_ERR_UNKNOWN;
+  }
   return MOSQ_ERR_SUCCESS;
 }
 
@@ -29,13 +47,6 @@ int mosquitto_auth_security_init(void *user_data, struct mosquitto_auth_opt *aut
 int mosquitto_auth_security_cleanup(void *user_data, struct mosquitto_auth_opt *auth_opts, int auth_opt_count, bool reload) {
   return MOSQ_ERR_SUCCESS;
 }
-
-struct jwt {
-	jwt_alg_t alg;
-	unsigned char *key;
-	int key_len;
-	json_t *grants;
-};
 
 
 static int get_js_int(json_t *js, const char *key)
@@ -66,23 +77,35 @@ static char *get_js_object(json_t *js, const char *key)
 
 int mosquitto_auth_unpwd_check(void *user_data, const char *username, const char *password) {
   
-  jwt_t *jwt;
-#ifdef MQAP_DEBUG
-  const char* val;
-  int i_val;
-#endif
-  time_t now;
-  int iat;
-  int exp;
-  unsigned char key[32] = "012345678901234567890123456789AB";
+  	struct userdata *ud = (struct userdata *)user_data; 
+  	jwt_t *jwt;
+  	const char* val;
+  	int i_val;
+  	time_t now;
+  	int iat;
+  	int exp;
 
-  if (username == NULL || password == NULL) {
-    return MOSQ_ERR_AUTH;
-  }
+	//TODO put all these constants in the plugin parameters
+  	unsigned char key[32] = "012345678901234567890123456789AB";
+  	const char producer_login[9] = "producer";
+	const char producer_pwd[17] = "b7bc7Bx7QDDATVdk";
+
+  	if (username == NULL || password == NULL) {
+    	   return MOSQ_ERR_AUTH;
+  	}
+
 #ifdef MQAP_DEBUG
   fprintf(stderr, "mosquitto_auth_unpwd_check: username=%s, password=%s\n", username, password);
 #endif
-  if ( ! strcmp(username, "jwt") ) {
+
+	// producer account, in my case the only one that can publish
+	if ( ! strcmp(username, producer_login) && ! strcmp(password, producer_pwd) ) {
+#ifdef MQAP_DEBUG
+  	  fprintf(stderr, "mosquitto_auth_unpwd_check: producer is allowed to connect \n");
+#endif
+       	  return MOSQ_ERR_SUCCESS;
+	}
+	
 
 	time(&now);
 
@@ -90,44 +113,81 @@ int mosquitto_auth_unpwd_check(void *user_data, const char *username, const char
 
 	if (( status == 0 ) && (jwt != NULL) ) {
 #ifdef MQAP_DEBUG	
-		fprintf(stderr, "mosquitto_auth_unpwd_check:  password is a valid JWT token\n");
-		val = jwt_get_grant(jwt, "iss");
-     		fprintf(stderr, "mosquitto_auth_unpwd_check:  iss : %s\n", val);
-		val = jwt_get_grant(jwt, "sub");
-     		fprintf(stderr, "mosquitto_auth_unpwd_check:  sub : %s\n", val);
-		i_val = get_js_int(jwt->grants, "iat");
-     		fprintf(stderr, "mosquitto_auth_unpwd_check:  iat : %d\n", i_val);
-		i_val = get_js_int(jwt->grants, "exp");
-     		fprintf(stderr, "mosquitto_auth_unpwd_check:  exp : %d\n", i_val);
-		val = get_js_object(jwt->grants, "aud");
-     		fprintf(stderr, "mosquitto_auth_unpwd_check:  aud : %s\n", val);
-     		fprintf(stderr, "mosquitto_auth_unpwd_check:  now : %d\n", (int)now);
+	  fprintf(stderr, "mosquitto_auth_unpwd_check:  password is a valid JWT token\n");
+	  val = jwt_get_grant(jwt, "iss");
+     	  fprintf(stderr, "mosquitto_auth_unpwd_check:  iss : %s\n", val);
+	  val = jwt_get_grant(jwt, "sub");
+     	  fprintf(stderr, "mosquitto_auth_unpwd_check:  sub : %s\n", val);
+	  i_val = get_js_int(jwt->grants, "iat");
+     	  fprintf(stderr, "mosquitto_auth_unpwd_check:  iat : %d\n", i_val);
+	  i_val = get_js_int(jwt->grants, "exp");
+     	  fprintf(stderr, "mosquitto_auth_unpwd_check:  exp : %d\n", i_val);
+	  val = get_js_object(jwt->grants, "aud");
+     	  fprintf(stderr, "mosquitto_auth_unpwd_check:  aud : %s\n", val);
+     	  fprintf(stderr, "mosquitto_auth_unpwd_check:  now : %d\n", (int)now);
 #endif
-		iat = get_js_int(jwt->grants, "iat");		
-		exp = get_js_int(jwt->grants, "exp");		
-		if ( (now < iat) || (now > exp) ) {
+	  iat = get_js_int(jwt->grants, "iat");		
+	  exp = get_js_int(jwt->grants, "exp");		
+	  if ( (now < iat) || (now > exp) ) {
 #ifdef MQAP_DEBUG
-                fprintf(stderr, "mosquitto_auth_unpwd_check:  token is expired\n");
+            fprintf(stderr, "mosquitto_auth_unpwd_check:  token is expired\n");
 #endif
-		   jwt_free(jwt);
-                   return MOSQ_ERR_AUTH;
-		}
+  	    jwt_free(jwt);
+            return MOSQ_ERR_AUTH;
+	  }
 
-		// TODO add here some other controls about iss, sub, ...
+	  // TODO add here some other controls about iss, sub, ...
+          val = jwt_get_grant(jwt, "sub");
+	  ud->username = (char *)malloc(sizeof(char)*strlen(val));
+          strcpy(ud->username, val);
+	  //TODO add the username <-> allowed topic to a hashtable
 
-		jwt_free(jwt);
-        	return MOSQ_ERR_SUCCESS;
-  	} else {
+          fprintf(stderr, "mosquitto_auth_unpwd_check:  sub : %s\n", val); 
+
+	  jwt_free(jwt);
+       	  return MOSQ_ERR_SUCCESS;
+        } else {
 #ifdef MQAP_DEBUG
-		fprintf(stderr, "mosquitto_auth_unpwd_check:  password is not a valid token %d\n", status);
+	  fprintf(stderr, "mosquitto_auth_unpwd_check:  password is not a valid token %d\n", status);
 #endif	
-	}
-  } 
+        }
 
-  return MOSQ_ERR_AUTH;
+  	return MOSQ_ERR_AUTH;
 }
 
+// Check if  part1 + part2 == to_compare
+// returns 0 if no difference, 1 otherwise
+int strmcmp(const char* part1, const char* part2, const char* to_compare) {
+
+  int len1 = strlen(part1);
+  int len2 = strlen(part2);
+  int len  = strlen(to_compare);
+  int i;
+
+  if ( len1 + len2 != len ) {
+        return 1;
+  } else {
+
+        for (i=0; i<len; i++) {
+                if ( i < len1 ) {
+                        if ( part1[i] != to_compare[i] ) {
+                                return 1;
+                        }
+                } else if (part2[i-len1] != to_compare[i] ) {
+                        return 1;
+                }
+        }
+  }
+
+  return 0;
+}
+
+
+
 int mosquitto_auth_acl_check(void *user_data, const char *clientid, const char *username, const char *topic, int access) {
+
+const char producer_login[9] = "producer";
+const char root_topic[10] = "CLE/DEMO/";
 
   char access_name[6];
   if (access == 0) {
@@ -137,13 +197,40 @@ int mosquitto_auth_acl_check(void *user_data, const char *clientid, const char *
   } else if (access == 2) {
     sprintf(access_name, "write");
   }
+
+
 #ifdef MQAP_DEBUG
-  fprintf(stderr, "mosquitto_auth_acl_check: clientid=%s, username=%s, topic=%s, access=%s\n",
-    clientid, username, topic, access_name);
+  fprintf(stderr, "mosquitto_auth_acl_check: clientid=%s, username=%s, topic=%s, access=%s\n", clientid, username, topic, access_name);
 #endif
-  //return (rc == 200 ? MOSQ_ERR_SUCCESS : MOSQ_ERR_ACL_DENIED);
-  return MOSQ_ERR_SUCCESS;
+
+  if ( username == NULL ) {
+#ifdef MQAP_DEBUG
+   fprintf(stderr, "mosquitto_auth_acl_check: anonymous user is not allowed\n");
+#endif
+   return MOSQ_ERR_ACL_DENIED;
+
+  }
+
+  if ( ! strcmp(username, producer_login) && (access == 2) ) {
+#ifdef MQAP_DEBUG
+	fprintf(stderr, "mosquitto_auth_acl_check: user %s is allowed to write\n", username);
+#endif
+	return MOSQ_ERR_SUCCESS;
+  }
+ 
+  if ( ! strmcmp( root_topic, username, topic ) && (access == 1) )  {
+#ifdef MQAP_DEBUG
+	fprintf(stderr, "mosquitto_auth_acl_check: user %s is allowed to read on topic %s\n", username, topic);
+#endif
+  	return MOSQ_ERR_SUCCESS;
+  }
+
+#ifdef MQAP_DEBUG
+  fprintf(stderr, "mosquitto_auth_acl_check: user %s is not allowed\n", username);
+#endif
+  return MOSQ_ERR_ACL_DENIED;
 }
+
 
 int mosquitto_auth_psk_key_get(void *user_data, const char *hint, const char *identity, char *key, int max_key_len) {
   return MOSQ_ERR_AUTH;
